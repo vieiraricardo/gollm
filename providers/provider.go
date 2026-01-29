@@ -184,6 +184,7 @@ func NewProviderRegistry(providerNames ...string) *ProviderRegistry {
 		"cohere":        NewCohereProvider,
 		"deepseek":      NewDeepSeekProvider,
 		"google-openai": NewGoogleProvider,
+		"zhipu":         NewZhipuProvider,
 		// Add other providers here as they are implemented
 	}
 
@@ -256,6 +257,16 @@ func NewProviderRegistry(providerNames ...string) *ProviderRegistry {
 			AuthHeader:        "Authorization",
 			AuthPrefix:        "Bearer ",
 			RequiredHeaders:   map[string]string{"Content-Type": "application/json"},
+			SupportsSchema:    true,
+			SupportsStreaming: true,
+		},
+		"zhipu": {
+			Name:              "zhipu",
+			Type:              TypeAnthropic,
+			Endpoint:          "https://api.z.ai/api/anthropic/v1/messages",
+			AuthHeader:        "x-api-key",
+			AuthPrefix:        "",
+			RequiredHeaders:   map[string]string{"Content-Type": "application/json", "anthropic-version": "2023-06-01"},
 			SupportsSchema:    true,
 			SupportsStreaming: true,
 		},
