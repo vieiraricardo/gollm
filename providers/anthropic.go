@@ -469,9 +469,34 @@ func (p *AnthropicProvider) PrepareStreamRequest(prompt string, options map[stri
 		delete(options, "temperature")
 	}
 
+	// Add tools if present
+	if tools, ok := options["tools"].([]utils.Tool); ok && len(tools) > 0 {
+		anthropicTools := make([]map[string]interface{}, len(tools))
+		for i, tool := range tools {
+			anthropicTools[i] = map[string]interface{}{
+				"name":         tool.Function.Name,
+				"description":  tool.Function.Description,
+				"input_schema": tool.Function.Parameters,
+			}
+		}
+		requestBody["tools"] = anthropicTools
+
+		// Add tool_choice if present
+		if toolChoice, ok := options["tool_choice"].(string); ok {
+			requestBody["tool_choice"] = map[string]interface{}{
+				"type": toolChoice,
+			}
+		} else {
+			// Default to auto for tool choice when tools are provided
+			requestBody["tool_choice"] = map[string]interface{}{
+				"type": "auto",
+			}
+		}
+	}
+
 	// Add other options
 	for k, v := range options {
-		if k != "stream" { // Don't override stream setting
+		if k != "stream" && k != "tools" && k != "tool_choice" { // Don't override stream setting or tools
 			requestBody[k] = v
 		}
 	}
@@ -496,8 +521,12 @@ func (p *AnthropicProvider) ParseStreamResponse(chunk []byte) (string, error) {
 		Type  string `json:"type"`
 		Index int    `json:"index"`
 		Delta struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
+			Type         string          `json:"type"`
+			Text         string          `json:"text"`
+			ToolUseIndex int             `json:"tool_use_index,omitempty"`
+			Name         string          `json:"name,omitempty"`
+			Input        json.RawMessage `json:"input,omitempty"`
+			PartialJSON  string          `json:"partial_json,omitempty"`
 		} `json:"delta"`
 	}
 
@@ -513,6 +542,20 @@ func (p *AnthropicProvider) ParseStreamResponse(chunk []byte) (string, error) {
 				return "", fmt.Errorf("skip token")
 			}
 			return event.Delta.Text, nil
+		} else if event.Delta.Type == "input_json_delta" {
+			// Tool call arguments streaming
+			if len(event.Delta.PartialJSON) > 0 {
+				// Return the partial JSON as a special marker that will be processed by the client
+				return fmt.Sprintf("__TOOL_DELTA__%d__%s", event.Delta.ToolUseIndex, event.Delta.PartialJSON), nil
+			}
+			return "", fmt.Errorf("skip token")
+		}
+		return "", fmt.Errorf("skip token")
+	case "content_block_start":
+		// New content block starting (could be tool_use)
+		if event.Delta.Type == "tool_use" && event.Delta.Name != "" {
+			// Return tool use start marker
+			return fmt.Sprintf("__TOOL_START__%d__%s", event.Index, event.Delta.Name), nil
 		}
 		return "", fmt.Errorf("skip token")
 	case "message_stop":
