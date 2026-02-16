@@ -272,6 +272,72 @@ func (p *OllamaProvider) SupportsStreaming() bool {
 	return true
 }
 
+// GenerateStream sends a streaming completion request to the Ollama API.
+// Ollama uses NDJSON (newline-delimited JSON) format, not SSE.
+// This method reads the streaming response and returns tokens through a channel.
+//
+// Parameters:
+//   - ctx: Context for request cancellation and timeouts
+//   - prompt: The input text to generate from
+//   - callback: Function to call for each token received
+//
+// Returns:
+//   - Any error encountered
+func (p *OllamaProvider) GenerateStream(ctx context.Context, prompt string, callback func(string)) error {
+	reqBody, err := p.PrepareStreamRequest(prompt, p.options)
+	if err != nil {
+		return fmt.Errorf("prepare stream request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", p.Endpoint(), bytes.NewReader(reqBody))
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+
+	for k, v := range p.Headers() {
+		req.Header.Set(k, v)
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("do request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("unexpected status code: %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	// Ollama returns NDJSON (newline-delimited JSON)
+	decoder := json.NewDecoder(resp.Body)
+	for {
+		var response struct {
+			Model    string `json:"model"`
+			Response string `json:"response"`
+			Done     bool   `json:"done"`
+		}
+
+		if err := decoder.Decode(&response); err != nil {
+			if err == io.EOF {
+				break
+			}
+			return fmt.Errorf("decode response: %w", err)
+		}
+
+		if response.Response != "" {
+			callback(response.Response)
+		}
+
+		if response.Done {
+			break
+		}
+	}
+
+	return nil
+}
+
 // PrepareStreamRequest prepares a request body for streaming
 func (p *OllamaProvider) PrepareStreamRequest(prompt string, options map[string]interface{}) ([]byte, error) {
 	options["stream"] = true

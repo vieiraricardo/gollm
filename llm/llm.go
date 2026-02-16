@@ -516,6 +516,10 @@ func (l *LLMImpl) Stream(ctx context.Context, prompt *Prompt, opts ...StreamOpti
 	}
 
 	// Create and return stream
+	// Ollama uses NDJSON format, other providers use SSE
+	if l.Provider.Name() == "ollama" {
+		return newOllamaStream(resp.Body, l.Provider, config), nil
+	}
 	return newProviderStream(resp.Body, l.Provider, config), nil
 }
 
@@ -590,5 +594,68 @@ func (s *providerStream) Next(ctx context.Context) (*StreamToken, error) {
 }
 
 func (s *providerStream) Close() error {
+	return nil
+}
+
+// ollamaStream implements TokenStream specifically for Ollama's NDJSON format
+type ollamaStream struct {
+	decoder       *json.Decoder
+	provider      providers.Provider
+	config        *StreamConfig
+	currentIndex  int
+}
+
+func newOllamaStream(reader io.ReadCloser, provider providers.Provider, config *StreamConfig) *ollamaStream {
+	return &ollamaStream{
+		decoder:       json.NewDecoder(reader),
+		provider:      provider,
+		config:        config,
+		currentIndex:  0,
+	}
+}
+
+func (s *ollamaStream) Next(ctx context.Context) (*StreamToken, error) {
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+			// Ollama returns NDJSON (newline-delimited JSON)
+			var response struct {
+				Model    string `json:"model"`
+				Response string `json:"response"`
+				Done     bool   `json:"done"`
+			}
+
+			if err := s.decoder.Decode(&response); err != nil {
+				if err == io.EOF {
+					return nil, io.EOF
+				}
+				return nil, err
+			}
+
+			// Check if stream is done
+			if response.Done {
+				return nil, io.EOF
+			}
+
+			// Skip empty responses
+			if response.Response == "" {
+				continue
+			}
+
+			// Return token
+			token := &StreamToken{
+				Text:  response.Response,
+				Type:  "text",
+				Index: s.currentIndex,
+			}
+			s.currentIndex++
+			return token, nil
+		}
+	}
+}
+
+func (s *ollamaStream) Close() error {
 	return nil
 }
